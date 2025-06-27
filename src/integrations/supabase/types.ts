@@ -9,7 +9,36 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
-      [_ in never]: never
+      excel_data: {
+        Row: {
+          file_name: string
+          headers: string[]
+          id: string
+          row_count: number
+          sheet_data: Json
+          uploaded_at: string
+          validation_passed: boolean
+        }
+        Insert: {
+          file_name: string
+          headers: string[]
+          id?: string
+          row_count: number
+          sheet_data: Json
+          uploaded_at?: string
+          validation_passed?: boolean
+        }
+        Update: {
+          file_name?: string
+          headers?: string[]
+          id?: string
+          row_count?: number
+          sheet_data?: Json
+          uploaded_at?: string
+          validation_passed?: boolean
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

@@ -1,12 +1,12 @@
-
-import React, { useState, useCallback, useMemo } from 'react';
-import { Upload, Search, FileText, AlertTriangle, CheckCircle, X } from 'lucide-react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import { Upload, Search, FileText, AlertTriangle, CheckCircle, X, Database, Calendar } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 import { ExcelProcessor } from '@/utils/excelProcessor';
 import { FuzzySearch } from '@/utils/fuzzySearch';
 
@@ -24,6 +24,16 @@ interface SheetData {
   originalData: any[];
 }
 
+interface StoredExcelData {
+  id: string;
+  file_name: string;
+  sheet_data: any;
+  headers: string[];
+  row_count: number;
+  uploaded_at: string;
+  validation_passed: boolean;
+}
+
 const Index = () => {
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -31,7 +41,72 @@ const Index = () => {
   const [sheetData, setSheetData] = useState<SheetData | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [storedFiles, setStoredFiles] = useState<StoredExcelData[]>([]);
+  const [showStoredFiles, setShowStoredFiles] = useState(false);
   const { toast } = useToast();
+
+  // Load stored files on component mount
+  useEffect(() => {
+    loadStoredFiles();
+  }, []);
+
+  const loadStoredFiles = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('excel_data')
+        .select('*')
+        .order('uploaded_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading stored files:', error);
+        return;
+      }
+
+      setStoredFiles(data || []);
+    } catch (error) {
+      console.error('Error loading stored files:', error);
+    }
+  };
+
+  const saveToSupabase = async (fileName: string, sheetData: SheetData) => {
+    try {
+      const { data, error } = await supabase
+        .from('excel_data')
+        .insert({
+          file_name: fileName,
+          sheet_data: sheetData.originalData,
+          headers: sheetData.headers,
+          row_count: sheetData.originalData.length,
+          validation_passed: true
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      console.log('Data saved to Supabase:', data);
+      toast({
+        title: "Data Saved",
+        description: "Excel data has been saved to the database successfully!",
+        variant: "default"
+      });
+
+      // Reload stored files
+      await loadStoredFiles();
+      
+      return data;
+    } catch (error) {
+      console.error('Error saving to Supabase:', error);
+      toast({
+        title: "Save Error",
+        description: "Failed to save data to database. Please try again.",
+        variant: "destructive"
+      });
+      throw error;
+    }
+  };
 
   const filteredData = useMemo(() => {
     if (!sheetData || !searchQuery.trim()) return sheetData?.originalData || [];
@@ -89,21 +164,43 @@ const Index = () => {
         });
       } else {
         setSheetData(result.data);
+        
+        // Save to Supabase if validation passed
+        if (result.data) {
+          await saveToSupabase(selectedFile.name, result.data);
+        }
+        
         toast({
           title: "File Processed Successfully",
-          description: "Your Excel file has been validated and loaded successfully!",
+          description: "Your Excel file has been validated, loaded, and saved to the database!",
           variant: "default"
         });
       }
     } catch (error) {
       toast({
-        title: "Processing Error",
+        title: "Processing Error", 
         description: error instanceof Error ? error.message : "Failed to process the Excel file",
         variant: "destructive"
       });
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const loadStoredFile = async (storedFile: StoredExcelData) => {
+    setSheetData({
+      headers: storedFile.headers,
+      rows: storedFile.sheet_data.map((row: any) => storedFile.headers.map(header => row[header])),
+      originalData: storedFile.sheet_data
+    });
+    setSearchQuery('');
+    setShowStoredFiles(false);
+    
+    toast({
+      title: "File Loaded",
+      description: `Loaded "${storedFile.file_name}" from the database`,
+      variant: "default"
+    });
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -148,6 +245,59 @@ const Index = () => {
             Upload, validate, and search through your Excel data with advanced fuzzy matching and comprehensive validation
           </p>
         </div>
+
+        {/* Stored Files Toggle */}
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            onClick={() => setShowStoredFiles(!showStoredFiles)}
+            className="flex items-center gap-2"
+          >
+            <Database className="w-4 h-4" />
+            {showStoredFiles ? 'Hide' : 'Show'} Stored Files ({storedFiles.length})
+          </Button>
+        </div>
+
+        {/* Stored Files List */}
+        {showStoredFiles && (
+          <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Database className="w-5 h-5" />
+                Previously Uploaded Files
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {storedFiles.length === 0 ? (
+                <p className="text-gray-500 text-center py-4">No files uploaded yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {storedFiles.map((storedFile) => (
+                    <div key={storedFile.id} className="flex items-center justify-between p-3 border rounded-lg hover:bg-gray-50">
+                      <div className="flex-1">
+                        <p className="font-medium">{storedFile.file_name}</p>
+                        <div className="flex items-center gap-4 text-sm text-gray-500">
+                          <span>{storedFile.row_count} rows</span>
+                          <div className="flex items-center gap-1">
+                            <Calendar className="w-3 h-3" />
+                            {new Date(storedFile.uploaded_at).toLocaleDateString()}
+                          </div>
+                        </div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => loadStoredFile(storedFile)}
+                      >
+                        Load
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Upload Section */}
         <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
