@@ -211,11 +211,11 @@ const Index = () => {
                     accept=".xlsx"
                     onChange={handleFileInput}
                     className="hidden"
-                    id="file-upload"
+                    id="excel-file-upload"
                   />
-                  <label htmlFor="file-upload">
-                    <Button className="cursor-pointer">
-                      Select Excel File
+                  <label htmlFor="excel-file-upload">
+                    <Button asChild className="cursor-pointer">
+                      <span>Select Excel File</span>
                     </Button>
                   </label>
                 </div>
