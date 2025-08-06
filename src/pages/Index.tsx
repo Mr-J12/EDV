@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/integrations/supabase/client';
 import { ExcelProcessor } from '@/utils/excelProcessor';
 import { FuzzySearch } from '@/utils/fuzzySearch';
 
@@ -20,14 +19,14 @@ interface ValidationError {
 
 interface SheetData {
   headers: string[];
-  rows: any[][];
-  originalData: any[];
+  rows: unknown[][];
+  originalData: Record<string, unknown>[];
 }
 
 interface StoredExcelData {
   id: string;
   file_name: string;
-  sheet_data: any;
+  sheet_data: Record<string, unknown>[];
   headers: string[];
   row_count: number;
   uploaded_at: string;
@@ -45,97 +44,73 @@ const Index = () => {
   const [showStoredFiles, setShowStoredFiles] = useState(false);
   const { toast } = useToast();
 
-  // Load stored files on component mount
-  useEffect(() => {
-    loadStoredFiles();
-  }, []);
-
-  const loadStoredFiles = async () => {
+  const loadStoredFiles = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from('excel_data')
-        .select('*')
-        .order('uploaded_at', { ascending: false });
-
-      if (error) {
-        console.error('Error loading stored files:', error);
-        return;
+      const response = await fetch('http://localhost:3001/api/excel-data');
+      if (!response.ok) {
+        throw new Error('Failed to fetch stored files from the server.');
       }
-
+      const data = await response.json();
       setStoredFiles(data || []);
     } catch (error) {
       console.error('Error loading stored files:', error);
-    }
-  };
-
-  const saveToSupabase = async (fileName: string, sheetData: SheetData) => {
-    try {
-      const { data, error } = await supabase
-        .from('excel_data')
-        .insert({
-          file_name: fileName,
-          sheet_data: sheetData.originalData,
-          headers: sheetData.headers,
-          row_count: sheetData.originalData.length,
-          validation_passed: true
-        })
-        .select()
-        .single();
-
-      if (error) {
-        throw error;
-      }
-
-      console.log('Data saved to Supabase:', data);
       toast({
-        title: "Data Saved",
-        description: "Excel data has been saved to the database successfully!",
-        variant: "default"
-      });
-
-      // Reload stored files
-      await loadStoredFiles();
-      
-      return data;
-    } catch (error) {
-      console.error('Error saving to Supabase:', error);
-      toast({
-        title: "Save Error",
-        description: "Failed to save data to database. Please try again.",
+        title: "Load Error",
+        description: "Could not fetch files. Is the backend server running?",
         variant: "destructive"
       });
-      throw error;
     }
-  };
+  }, [toast]);
 
-  const filteredData = useMemo(() => {
-    if (!sheetData || !searchQuery.trim()) return sheetData?.originalData || [];
-    
-    const fuzzySearch = new FuzzySearch(sheetData.originalData, sheetData.headers);
-    return fuzzySearch.search(searchQuery);
-  }, [sheetData, searchQuery]);
+  useEffect(() => {
+    loadStoredFiles();
+  }, [loadStoredFiles]);
 
-  const handleDrag = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  }, []);
+  const saveToDatabase = useCallback(
+    async (fileName: string, sheetData: SheetData) => {
+      try {
+        const response = await fetch('http://localhost:3001/api/excel-data', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            fileName: fileName,
+            sheetData: sheetData,
+            validationPassed: true,
+          }),
+        });
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileSelect(e.dataTransfer.files[0]);
-    }
-  }, []);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || 'Failed to save data to the server.');
+        }
 
-  const handleFileSelect = async (selectedFile: File) => {
+        const savedData = await response.json();
+        console.log('Data saved via API:', savedData);
+
+        toast({
+          title: "Data Saved",
+          description: "Excel data has been saved to the database successfully!",
+          variant: "default"
+        });
+
+        await loadStoredFiles();
+        return savedData;
+      } catch (error) {
+        console.error('Error saving to database:', error);
+        toast({
+          title: "Save Error",
+          description: error instanceof Error ? error.message : "Failed to save data. Please try again.",
+          variant: "destructive"
+        });
+        throw error;
+      }
+    },
+    [toast, loadStoredFiles]
+  );
+
+  const handleFileSelect = useCallback(async (selectedFile: File) => {
     if (!selectedFile.name.endsWith('.xlsx')) {
       toast({
         title: "Invalid File Type",
@@ -154,48 +129,70 @@ const Index = () => {
     try {
       const processor = new ExcelProcessor();
       const result = await processor.processFile(selectedFile);
-      
+
       if (result.errors.length > 0) {
         setValidationErrors(result.errors);
         toast({
           title: "Validation Errors Found",
-          description: `${result.errors.length} validation error(s) detected. Please fix them before proceeding.`,
+          description: `${result.errors.length} validation error(s) detected.`,
           variant: "destructive"
         });
       } else {
         setSheetData(result.data);
-        
-        // Save to Supabase if validation passed
         if (result.data) {
-          await saveToSupabase(selectedFile.name, result.data);
+          await saveToDatabase(selectedFile.name, result.data);
+        } else {
+          toast({
+            title: "File Processed Successfully",
+            description: "Your Excel file has been validated and loaded.",
+            variant: "default"
+          });
         }
-        
-        toast({
-          title: "File Processed Successfully",
-          description: "Your Excel file has been validated, loaded, and saved to the database!",
-          variant: "default"
-        });
       }
     } catch (error) {
       toast({
-        title: "Processing Error", 
+        title: "Processing Error",
         description: error instanceof Error ? error.message : "Failed to process the Excel file",
         variant: "destructive"
       });
     } finally {
       setIsProcessing(false);
     }
-  };
+  }, [toast, saveToDatabase]);
+
+  const filteredData = useMemo(() => {
+    if (!sheetData || !searchQuery.trim()) return sheetData?.originalData || [];
+    const fuzzySearch = new FuzzySearch(sheetData.originalData, sheetData.headers);
+    return fuzzySearch.search(searchQuery);
+  }, [sheetData, searchQuery]);
+
+  const handleDrag = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileSelect(e.dataTransfer.files[0]);
+    }
+  }, [handleFileSelect]);
 
   const loadStoredFile = async (storedFile: StoredExcelData) => {
     setSheetData({
       headers: storedFile.headers,
-      rows: storedFile.sheet_data.map((row: any) => storedFile.headers.map(header => row[header])),
+      rows: storedFile.sheet_data.map((row: Record<string, unknown>) => storedFile.headers.map(header => row[header])),
       originalData: storedFile.sheet_data
     });
     setSearchQuery('');
     setShowStoredFiles(false);
-    
     toast({
       title: "File Loaded",
       description: `Loaded "${storedFile.file_name}" from the database`,
@@ -231,7 +228,6 @@ const Index = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Header */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-3 mb-4">
             <div className="p-3 bg-blue-500 rounded-xl">
@@ -246,7 +242,6 @@ const Index = () => {
           </p>
         </div>
 
-        {/* Stored Files Toggle */}
         <div className="flex justify-center">
           <Button
             variant="outline"
@@ -258,7 +253,6 @@ const Index = () => {
           </Button>
         </div>
 
-        {/* Stored Files List */}
         {showStoredFiles && (
           <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
             <CardHeader>
@@ -299,7 +293,6 @@ const Index = () => {
           </Card>
         )}
 
-        {/* Upload Section */}
         <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -310,8 +303,8 @@ const Index = () => {
           <CardContent>
             <div
               className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ${
-                dragActive 
-                  ? 'border-blue-500 bg-blue-50' 
+                dragActive
+                  ? 'border-blue-500 bg-blue-50'
                   : 'border-gray-300 hover:border-gray-400'
               } ${isProcessing ? 'opacity-50 pointer-events-none' : ''}`}
               onDragEnter={handleDrag}
@@ -374,7 +367,6 @@ const Index = () => {
           </CardContent>
         </Card>
 
-        {/* Validation Errors */}
         {validationErrors.length > 0 && (
           <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
             <CardHeader>
@@ -409,7 +401,6 @@ const Index = () => {
           </Card>
         )}
 
-        {/* Data Display */}
         {sheetData && (
           <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
             <CardHeader>
@@ -455,7 +446,6 @@ const Index = () => {
                     </tbody>
                   </table>
                 </div>
-                
                 {filteredData.length === 0 && searchQuery && (
                   <div className="text-center py-8 text-gray-500">
                     No results found for "{searchQuery}"
@@ -466,7 +456,6 @@ const Index = () => {
           </Card>
         )}
 
-        {/* Feature Info */}
         <div className="grid md:grid-cols-3 gap-4">
           <Card className="shadow-lg border-0 bg-white/60 backdrop-blur-sm">
             <CardContent className="p-6 text-center">
@@ -477,7 +466,6 @@ const Index = () => {
               </p>
             </CardContent>
           </Card>
-          
           <Card className="shadow-lg border-0 bg-white/60 backdrop-blur-sm">
             <CardContent className="p-6 text-center">
               <Search className="w-8 h-8 text-green-500 mx-auto mb-3" />
@@ -487,7 +475,6 @@ const Index = () => {
               </p>
             </CardContent>
           </Card>
-          
           <Card className="shadow-lg border-0 bg-white/60 backdrop-blur-sm">
             <CardContent className="p-6 text-center">
               <CheckCircle className="w-8 h-8 text-purple-500 mx-auto mb-3" />
